@@ -33,7 +33,6 @@
 #define AUDIO_PT8211_OVERSAMPLING
 	//uncomment ONE of these to define interpolation type for oversampling:
 // #define AUDIO_PT8211_INTERPOLATION_LINEAR
-#define AUDIO_PT8211_INTERPOLATION_CIC
 
 #include "Arduino.h"
 #include "AudioStream.h"

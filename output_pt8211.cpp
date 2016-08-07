@@ -75,8 +75,12 @@ void AudioOutputPT8211::begin(void)
 	dma.attachInterrupt(isr);
 }
 
+#if AUDIO_PT8211_INTERPOLATION_CIC < 2 || AUDIO_PT8211_INTERPOLATION_CIC > 8
+	#error "AUDIO_PT8211_INTERPOLATION_CIC must be in the range 2 ... 8";
+#endif
 void AudioOutputPT8211::isr(void)
 {
+	digitalWriteFast(LED_BUILTIN, HIGH);
 	int16_t *dest;
 	audio_block_t *blockL, *blockR;
 	uint32_t saddr, offsetL, offsetR;
@@ -132,46 +136,74 @@ void AudioOutputPT8211::isr(void)
 					int32_t valL = blockL->data[offsetL];
 					int32_t valR = blockR->data[offsetR];
 					
-					int32_t combL[3] = {0};
-					static int32_t combLOld[2] = {0};
-					int32_t combR[3] = {0};
-					static int32_t combROld[2] = {0};
+					int32_t combL[AUDIO_PT8211_INTERPOLATION_CIC] = {0};
+					static int32_t combLOld[AUDIO_PT8211_INTERPOLATION_CIC-1] = {0};
+					int32_t combR[AUDIO_PT8211_INTERPOLATION_CIC] = {0};
+					static int32_t combROld[AUDIO_PT8211_INTERPOLATION_CIC-1] = {0};
 					
 					combL[0] = valL - oldL;
 					combR[0] = valR - oldR;
+					
+					for (int j = 1; j < AUDIO_PT8211_INTERPOLATION_CIC; j++){
+						combL[j] = combL[j-1] - combLOld[j-1];
+						combR[j] = combR[j-1] - combROld[j-1];
+					}
+					/*
 					combL[1] = combL[0] - combLOld[0];
 					combR[1] = combR[0] - combROld[0];
 					combL[2] = combL[1] - combLOld[1];
 					combR[2] = combR[1] - combROld[1];
-					// combL[2] now holds input val
-					// combR[2] now holds input val
+					*/
+					// combL[AUDIO_PT8211_INTERPOLATION_CIC-1] now holds input val
+					// combR[AUDIO_PT8211_INTERPOLATION_CIC-1] now holds input val
 					oldL = valL;
 					oldR = valR;
+					for (int j = 0; j < AUDIO_PT8211_INTERPOLATION_CIC-1; j++){
+						combLOld[j] = combL[j];
+						combROld[j] = combR[j];
+					}
+					/*
 					combLOld[0] = combL[0];
 					combROld[0] = combR[0];
 					combLOld[1] = combL[1];
 					combROld[1] = combR[1];
+					*/
 					for (int j = 0; j < 4; j++) {
-						int32_t integrateL[3];
-						int32_t integrateR[3];
-						static int32_t integrateLOld[3] = {0};
-						static int32_t integrateROld[3] = {0};
-						integrateL[0] = ( (j==0) ? (combL[2]) : (0) ) + integrateLOld[0];
-						integrateR[0] = ( (j==0) ? (combR[2]) : (0) ) + integrateROld[0];
+						int32_t integrateL[AUDIO_PT8211_INTERPOLATION_CIC];
+						int32_t integrateR[AUDIO_PT8211_INTERPOLATION_CIC];
+						static int32_t integrateLOld[AUDIO_PT8211_INTERPOLATION_CIC] = {0};
+						static int32_t integrateROld[AUDIO_PT8211_INTERPOLATION_CIC] = {0};
+						integrateL[0] = ( (j==0) ? (combL[AUDIO_PT8211_INTERPOLATION_CIC-1]) : (0) ) + integrateLOld[0];
+						integrateR[0] = ( (j==0) ? (combR[AUDIO_PT8211_INTERPOLATION_CIC-1]) : (0) ) + integrateROld[0];
+						for (int k = 1; k < AUDIO_PT8211_INTERPOLATION_CIC; k++){
+							integrateL[k] = integrateL[k-1] + integrateLOld[k];
+							integrateR[k] = integrateR[k-1] + integrateROld[k];
+						}
+						/*
 						integrateL[1] = integrateL[0] + integrateLOld[1];
 						integrateR[1] = integrateR[0] + integrateROld[1];
 						integrateL[2] = integrateL[1] + integrateLOld[2];
 						integrateR[2] = integrateR[1] + integrateROld[2];
+						*/
 						// integrateL[2] now holds j'th upsampled value
 						// integrateR[2] now holds j'th upsampled value
-						*(dest+j*2) = integrateL[2] >> 4;
-						*(dest+j*2+1) = integrateR[2] >> 4;
+						for (int k = 0; k < AUDIO_PT8211_INTERPOLATION_CIC; k++){
+							integrateLOld[k] = integrateL[k];
+							integrateROld[k] = integrateR[k];
+						}
+						/*
 						integrateLOld[0] = integrateL[0];
 						integrateROld[0] = integrateR[0];
 						integrateLOld[1] = integrateL[1];
 						integrateROld[1] = integrateR[1];
 						integrateLOld[2] = integrateL[2];
 						integrateROld[2] = integrateR[2];
+						*/
+						//DC filter gain G = 4^(AUDIO_PT8211_INTERPOLATION_CIC)
+						//Attenuation by zero-stuffing: 1/4
+						//-> G*A = Effective Gain = what needs to be >> bitshifted to compensate:
+						*(dest+j*2) = integrateL[AUDIO_PT8211_INTERPOLATION_CIC-1] >> (int) (log( 0.25 * pow(4,AUDIO_PT8211_INTERPOLATION_CIC) ) / log(2) + 0.5);
+						*(dest+j*2+1) = integrateR[AUDIO_PT8211_INTERPOLATION_CIC-1] >> (int) (log( 0.25 * pow(4,AUDIO_PT8211_INTERPOLATION_CIC) ) / log(2) + 0.5);;
 					}
 					dest+=8;
 				}
@@ -203,6 +235,7 @@ void AudioOutputPT8211::isr(void)
 				}
 			#elif defined(AUDIO_PT8211_INTERPOLATION_CIC)
 				for (int i=0; i< AUDIO_BLOCK_SAMPLES / 2; i++, offsetL++, offsetR++) {
+					//TODO: change to variable filter count.
 					int32_t valL = blockL->data[offsetL];
 
 					int32_t combL[3] = {0};
@@ -262,6 +295,7 @@ void AudioOutputPT8211::isr(void)
 				}
 			#elif defined(AUDIO_PT8211_INTERPOLATION_CIC)
 				for (int i=0; i< AUDIO_BLOCK_SAMPLES / 2; i++, offsetL++, offsetR++) {
+					//TODO: change to variable filter count.
 					int32_t valR = blockR->data[offsetR];
 
 					int32_t combR[3] = {0};
@@ -323,6 +357,7 @@ void AudioOutputPT8211::isr(void)
 		AudioOutputPT8211::block_right_1st = AudioOutputPT8211::block_right_2nd;
 		AudioOutputPT8211::block_right_2nd = NULL;
 	}
+	digitalWriteFast(LED_BUILTIN, LOW);
 }
 
 
